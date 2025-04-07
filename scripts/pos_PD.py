@@ -20,8 +20,8 @@ env = PE1_E1_I3_Env(episode_timeout=600.0, capture_dist=5.0)
 obs, info = env.reset()
 
 # control gains
-kp = -2e2
-kd = -1.2e4
+kp = -2.236
+kd = -173.2
 
 is_done = False
 time_hist = []
@@ -30,33 +30,36 @@ rel_pos_hist = []
 rel_vel_hist = []
 u_hist = []
 u_saturated_hist = []
-while not is_done:
-    # get observations
-    time = obs[0]
-    propellant_mass = obs[2]
-    rel_pos = np.array(obs[3:6]) - np.array(obs[9:12])
-    rel_vel = np.array(obs[6:9]) - np.array(obs[12:15])
+try:
+    while not is_done:
+        # get observations
+        time = obs[0]
+        propellant_mass = obs[2]
+        rel_pos = np.array(obs[3:6]) - np.array(obs[9:12])
+        rel_vel = np.array(obs[6:9]) - np.array(obs[12:15])
 
-    # store observations
-    time_hist.append(time)
-    propellant_mass_hist.append(propellant_mass)
-    rel_pos_hist.append(rel_pos)
-    rel_vel_hist.append(rel_vel)
+        # store observations
+        time_hist.append(time)
+        propellant_mass_hist.append(propellant_mass)
+        rel_pos_hist.append(rel_pos)
+        rel_vel_hist.append(rel_vel)
 
-    # calculate control
-    u = kp * rel_pos + kd * rel_vel
-    u_saturated = np.clip(u, -env.agent_max_thrust_up, env.agent_max_thrust_up)
-    u_hist.append(u)
-    u_saturated_hist.append(u_saturated)
+        # calculate control
+        u = kp * rel_pos + kd * rel_vel
+        u_saturated = np.clip(u, -env.agent_max_thrust_up, env.agent_max_thrust_up)
+        u_hist.append(u)
+        u_saturated_hist.append(u_saturated)
 
-    # apply control
-    env.logger.info(f"rel_pos: {rel_pos}, rel_vel: {rel_vel}, u_saturated: {u_saturated}")
-    act = {
-        "burn_vec": [u_saturated.item(0), u_saturated.item(1), u_saturated.item(2), 0.1],
-        "vec_type": 1,
-        "ref_frame": 1
-    }
-    obs, rew, is_done, info = env.step(act)
+        # apply control
+        env.logger.info(f"rel_pos: {rel_pos}, rel_vel: {rel_vel}, u_saturated: {u_saturated}")
+        act = {
+            "burn_vec": [u_saturated.item(0), u_saturated.item(1), u_saturated.item(2), 0.1],
+            "vec_type": 1,
+            "ref_frame": 1
+        }
+        obs, rew, is_done, info = env.step(act)
+except KeyboardInterrupt:
+    pass
 
 # close the environments to cleanup any processes
 env.close()
