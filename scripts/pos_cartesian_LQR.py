@@ -59,7 +59,6 @@ time_hist = []
 propellant_mass_hist = []
 rel_pos_hist = []
 rel_vel_hist = []
-rel_pos_sqrt_hist = []
 u_hist = []
 u_saturated_hist = []
 try:
@@ -69,7 +68,6 @@ try:
         propellant_mass = obs[2]
         rel_pos = np.array(obs[3:6]) - np.array(obs[9:12])
         rel_vel = np.array(obs[6:9]) - np.array(obs[12:15])
-        rel_pos_sqrt = np.sign(rel_pos) * np.sqrt(np.abs(rel_pos))
         x = np.hstack((rel_pos.reshape(-1, 1), rel_vel.reshape(-1, 1))).reshape(-1, 1)
 
         # store observations
@@ -77,7 +75,6 @@ try:
         propellant_mass_hist.append(propellant_mass)
         rel_pos_hist.append(rel_pos)
         rel_vel_hist.append(rel_vel)
-        rel_pos_sqrt_hist.append(rel_pos_sqrt)
 
         # calculate control
         u = (-K @ x).flatten()
@@ -104,7 +101,6 @@ env.close()
 # convert lists to numpy arrays
 rel_pos_array = np.array(rel_pos_hist)
 rel_vel_array = np.array(rel_vel_hist)
-rel_pos_sqrt_array = np.array(rel_pos_sqrt_hist)
 u_array = np.array(u_hist)
 u_saturated_array = np.array(u_saturated_hist)
 
