@@ -13,9 +13,9 @@ Instructions to Run:
 
 from kspdg.pe1.e1_envs import PE1_E1_I3_Env
 import kspdg.utils.constants as C
-import numpy as np
-import control as ctrl
 from matplotlib import pyplot as plt
+import numpy as np
+from scipy.integrate import solve_ivp
 
 # instantiate and reset the environment to populate game
 env = PE1_E1_I3_Env(episode_timeout=600.0, capture_dist=5.0)
@@ -23,38 +23,7 @@ obs, info = env.reset()
 
 # State constants
 mu = C.KERBIN.MU  # m^3/s^2
-mass = float(obs[1])  # kg
-
-x_p = obs[3]
-x_e = obs[9]
-y_p = obs[4]
-y_e = obs[10]
-z_p = obs[5]
-z_e = obs[11]
-
-# Calculate the partial derivatives of the dynamics
-partial_f_x = mu*(-2*x_p**2 + y_p**2 + z_p**2) / (x_p**2 + y_p**2 + z_p**2)**(5/2) - \
-    mu*(-2*x_e**2 + y_e**2 + z_e**2) / (x_e**2 + y_e**2 + z_e**2)**(5/2)
-partial_f_y = mu*(x_p**2 - 2*y_p**2 + z_p**2) / (x_p**2 + y_p**2 + z_p**2)**(5/2) - \
-    mu*(x_e**2 - 2*y_e**2 + z_e**2) / (x_e**2 + y_e**2 + z_e**2)**(5/2)
-partial_f_z = mu*(x_p**2 + y_p**2 - 2*z_p**2) / (x_p**2 + y_p**2 + z_p**2)**(5/2) - \
-    mu*(x_e**2 + y_e**2 - 2*z_e**2) / (x_e**2 + y_e**2 + z_e**2)**(5/2)
-
-# State space model
-A = np.array([[0, 1, 0, 0, 0, 0],
-              [partial_f_x, 0, 0, 0, 0, 0],
-              [0, 0, 0, 1, 0, 0],
-              [0, 0, partial_f_y, 0, 0, 0],
-              [0, 0, 0, 0, 0, 1],
-              [0, 0, 0, 0, partial_f_z, 0]])
-B = np.array([[0, 0, 0],
-              [1 / mass, 0, 0],
-              [0, 0, 0],
-              [0, 1 / mass, 0],
-              [0, 0, 0],
-              [0, 0, 1 / mass]])
-C = np.eye(6)
-D = np.array([[0, 0, 0]])
+time_final = 300.0  # seconds
 
 # LQR parameters
 pos_weight = 2.5
@@ -69,8 +38,87 @@ Q = np.array([[pos_weight, 0, 0, 0, 0, 0],
               [0, 0, 0, 0, 0, vel_weight]])
 R = np.eye(3) * u_weight
 
-# Compute LQR gain
-K, S, E = ctrl.lqr(A, B, Q, R)
+def calculate_K(obs):
+    def A(t):
+        initial_state = [obs[i] for i in range(3, 15)]
+
+        def dynamics(t, x):
+            x_p = x[0]
+            y_p = x[1]
+            z_p = x[2]
+            x_e = x[6]
+            y_e = x[7]
+            z_e = x[8]
+
+            dx_p_dt = x[3]
+            dy_p_dt = x[4]
+            dz_p_dt = x[5]
+            dx_e_dt = x[9]
+            dy_e_dt = x[10]
+            dz_e_dt = x[11]
+
+            dvx_p_dt = mu*x_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
+            dvy_p_dt = mu*y_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
+            dvz_p_dt = mu*z_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
+            dvx_e_dt = mu*x_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+            dvy_e_dt = mu*y_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+            dvz_e_dt = mu*z_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+
+            return [dx_p_dt, dy_p_dt, dz_p_dt, dvx_p_dt, dvy_p_dt, dvz_p_dt,
+                    dx_e_dt, dy_e_dt, dz_e_dt, dvx_e_dt, dvy_e_dt, dvz_e_dt]
+
+        # Integrate the dynamics
+        t_span = [0, t]
+        sol = solve_ivp(dynamics, t_span, initial_state)
+        current_state = sol.y[:, -1]
+
+        x_p_curr = current_state[0]
+        y_p_curr = current_state[1]
+        z_p_curr = current_state[2]
+        x_e_curr = current_state[6]
+        y_e_curr = current_state[7]
+        z_e_curr = current_state[8]
+
+        # Calculate the partial derivatives of the dynamics
+        partial_f_x = mu*(-2*x_p_curr**2 + y_p_curr**2 + z_p_curr**2) / (x_p_curr**2 + y_p_curr**2 + z_p_curr**2)**(5/2) - \
+            mu*(-2*x_e_curr**2 + y_e_curr**2 + z_e_curr**2) / (x_e_curr**2 + y_e_curr**2 + z_e_curr**2)**(5/2)
+        partial_f_y = mu*(x_p_curr**2 - 2*y_p_curr**2 + z_p_curr**2) / (x_p_curr**2 + y_p_curr**2 + z_p_curr**2)**(5/2) - \
+            mu*(x_e_curr**2 - 2*y_e_curr**2 + z_e_curr**2) / (x_e_curr**2 + y_e_curr**2 + z_e_curr**2)**(5/2)
+        partial_f_z = mu*(x_p_curr**2 + y_p_curr**2 - 2*z_p_curr**2) / (x_p_curr**2 + y_p_curr**2 + z_p_curr**2)**(5/2) - \
+            mu*(x_e_curr**2 + y_e_curr**2 - 2*z_e_curr**2) / (x_e_curr**2 + y_e_curr**2 + z_e_curr**2)**(5/2)
+
+        # State space model
+        A = np.array([[0, 1, 0, 0, 0, 0],
+                      [partial_f_x, 0, 0, 0, 0, 0],
+                      [0, 0, 0, 1, 0, 0],
+                      [0, 0, partial_f_y, 0, 0, 0],
+                      [0, 0, 0, 0, 0, 1],
+                      [0, 0, 0, 0, partial_f_z, 0]])
+        return A
+
+    mass = float(obs[1])
+    B = np.array([[0, 0, 0],
+                  [1 / mass, 0, 0],
+                  [0, 0, 0],
+                  [0, 1 / mass, 0],
+                  [0, 0, 0],
+                  [0, 0, 1 / mass]])
+
+    def dre(t, P_flat):
+        P = P_flat.reshape(6, 6)
+        dP = -(A(t).T @ P + P @ A(t) - P @ B @ np.linalg.inv(R) @ B.T @ P + Q)
+        return dP.flatten()
+
+    # Integrate backwards from tf to now
+    time_curr = obs[0]
+    P_tf = np.zeros((6, 6)).flatten()
+    sol = solve_ivp(dre, [time_final, time_curr], P_tf)
+
+    # Compute LQR gain
+    P = sol.y[:, -1].reshape(6, 6)
+    K = np.linalg.inv(R) @ B.T @ P
+
+    return K
 
 is_done = False
 time_hist = []
@@ -79,20 +127,28 @@ rel_pos_hist = []
 rel_vel_hist = []
 u_hist = []
 u_saturated_hist = []
+
+time_at_k_update = 0.0
+K = calculate_K(obs)
 try:
     while not is_done:
         # get observations
-        time = obs[0]
+        time_curr = obs[0]
         propellant_mass = obs[2]
         pos_prime = np.array(obs[3:6]) - np.array(obs[9:12])
         vel_prime = np.array(obs[6:9]) - np.array(obs[12:15])
         state = np.hstack((pos_prime.reshape(-1, 1), vel_prime.reshape(-1, 1))).reshape(-1, 1)
 
         # store observations
-        time_hist.append(time)
+        time_hist.append(time_curr)
         propellant_mass_hist.append(propellant_mass)
         rel_pos_hist.append(pos_prime)
         rel_vel_hist.append(vel_prime)
+
+        # calculate LQR gain
+        if (time_curr - time_at_k_update) > 5.0:
+            time_at_k_update = time_curr
+            K = calculate_K(obs)
 
         # calculate control
         u = (-K @ state).flatten()
