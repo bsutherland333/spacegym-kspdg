@@ -57,12 +57,12 @@ def calculate_K(obs):
             dy_e_dt = x[10]
             dz_e_dt = x[11]
 
-            dvx_p_dt = mu*x_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
-            dvy_p_dt = mu*y_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
-            dvz_p_dt = mu*z_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
-            dvx_e_dt = mu*x_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
-            dvy_e_dt = mu*y_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
-            dvz_e_dt = mu*z_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+            dvx_p_dt = -mu*x_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
+            dvy_p_dt = -mu*y_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
+            dvz_p_dt = -mu*z_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
+            dvx_e_dt = -mu*x_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+            dvy_e_dt = -mu*y_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+            dvz_e_dt = -mu*z_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
 
             return [dx_p_dt, dy_p_dt, dz_p_dt, dvx_p_dt, dvy_p_dt, dvz_p_dt,
                     dx_e_dt, dy_e_dt, dz_e_dt, dvx_e_dt, dvy_e_dt, dvz_e_dt]
