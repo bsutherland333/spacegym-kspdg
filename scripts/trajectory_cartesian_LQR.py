@@ -13,18 +13,23 @@ Instructions to Run:
 
 import control as ctrl
 from kspdg.pe1.e1_envs import PE1_E1_I3_Env
+from kspdg.pe1.pe1_base import PursuitEvadeGroup1Env
 import kspdg.utils.constants as C
 from matplotlib import pyplot as plt
 import numpy as np
 from scipy.integrate import solve_ivp
+from scipy.optimize import minimize
 
 # instantiate and reset the environment to populate game
-mu = C.KERBIN.MU  # m^3/s^2
-env = PE1_E1_I3_Env(episode_timeout=600.0, capture_dist=5.0)
+MU = C.KERBIN.MU  # m^3/s^2
+MAX_THRUST = PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_THRUST_UP
+MAX_FUEL_CONSUMPION = PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_FUEL_CONSUMPTION_UP
+max_time = 300.0  # seconds
+env = PE1_E1_I3_Env(episode_timeout=max_time, capture_dist=5.0)
 obs, info = env.reset()
 mass = float(obs[1])
 
-def dynamics(t, x):
+def dynamics(t, x, thrust):
     x_p = x[0]
     y_p = x[1]
     z_p = x[2]
@@ -39,20 +44,108 @@ def dynamics(t, x):
     dy_e_dt = x[10]
     dz_e_dt = x[11]
 
-    dvx_p_dt = -mu*x_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
-    dvy_p_dt = -mu*y_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
-    dvz_p_dt = -mu*z_p / (x_p**2 + y_p**2 + z_p**2)**(3/2)
-    dvx_e_dt = -mu*x_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
-    dvy_e_dt = -mu*y_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
-    dvz_e_dt = -mu*z_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+    dvx_p_dt = -MU*x_p / (x_p**2 + y_p**2 + z_p**2)**(3/2) + thrust[0] / mass
+    dvy_p_dt = -MU*y_p / (x_p**2 + y_p**2 + z_p**2)**(3/2) + thrust[1] / mass
+    dvz_p_dt = -MU*z_p / (x_p**2 + y_p**2 + z_p**2)**(3/2) + thrust[2] / mass
+    dvx_e_dt = -MU*x_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+    dvy_e_dt = -MU*y_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
+    dvz_e_dt = -MU*z_e / (x_e**2 + y_e**2 + z_e**2)**(3/2)
 
-    return [dx_p_dt, dy_p_dt, dz_p_dt, dvx_p_dt, dvy_p_dt, dvz_p_dt,
-            dx_e_dt, dy_e_dt, dz_e_dt, dvx_e_dt, dvy_e_dt, dvz_e_dt]
+    return np.array([dx_p_dt, dy_p_dt, dz_p_dt, dvx_p_dt, dvy_p_dt, dvz_p_dt,
+                     dx_e_dt, dy_e_dt, dz_e_dt, dvx_e_dt, dvy_e_dt, dvz_e_dt])
+
+def cost_function(input):
+    desired_first_step = 2.5
+    initial_state = [obs[i] for i in range(3, 15)]
+    final_time = (input[4] + input[8]) * 60
+
+    # Initial burn
+    t_span = [0, input[3] * 60]
+    thrust = input[0:3] * 4000
+    first_step = np.min([desired_first_step, input[3] * 60 - 0.1])
+    first_step = first_step if first_step > 0 else None
+    pre_drift_state = solve_ivp(dynamics, t_span, initial_state, first_step=first_step, args=(thrust,)).y[:, -1]
+
+    # Drift
+    t_span = [input[3] * 60, input[4] * 60]
+    thrust = np.zeros(3)
+    first_step = np.min([desired_first_step, (input[4] - input[3]) * 60 - 0.1])
+    first_step = first_step if first_step > 0 else None
+    post_drift_state = solve_ivp(dynamics, t_span, pre_drift_state, first_step=first_step, args=(thrust,)).y[:, -1]
+
+    # Final burn
+    t_span = [input[4] * 60, final_time]
+    first_step = np.min([desired_first_step, input[8] * 60 - 0.1])
+    first_step = first_step if first_step > 0 else None
+    final_state = solve_ivp(dynamics, t_span, post_drift_state, first_step=first_step, args=(input,)).y[:, -1]
+
+    # Calculate the cost
+    rel_pos = np.array(final_state[0:3]) - np.array(final_state[6:9])
+    rel_vel = np.array(final_state[3:6]) - np.array(final_state[9:12])
+
+    initial_fuel_consumpion = np.abs(input[0:3]).sum() * input[3] * 60 * MAX_FUEL_CONSUMPION
+    final_fuel_consumpion = np.abs(input[5:8]).sum() * input[8] * 60 * MAX_FUEL_CONSUMPION
+    total_fuel_consumpion = initial_fuel_consumpion + final_fuel_consumpion
+
+    return (0.1 * np.linalg.norm(rel_pos))**2.0 + (0.5 * np.linalg.norm(rel_vel))**1.5 + \
+        (0.1 * total_fuel_consumpion)**1.25 + (0.01 * final_time)
+
+def get_trajectory(initial_state, input):
+    final_time = (input[4] + input[8]) * 60
+
+    # Initial burn
+    t_span = [0, input[3] * 60]
+    t_eval = np.linspace(0, input[3] * 60, int(input[3] * 120))
+    thrust = input[0:3] * 4000
+    initial_trajectory_sol = solve_ivp(dynamics, t_span, initial_state, t_eval=t_eval, args=(thrust,))
+    pre_drift_state = initial_trajectory_sol.y[:, -1] if len(initial_trajectory_sol.y) > 0 else initial_state
+
+    # Drift
+    t_span = [input[3] * 60, input[4] * 60]
+    t_eval = np.linspace(input[3] * 60, input[4] * 60, int((input[4] - input[3]) * 60))
+    thrust = np.zeros(3)
+    drift_trajectory_sol = solve_ivp(dynamics, t_span, pre_drift_state, t_eval=t_eval, args=(thrust,))
+    post_drift_state = drift_trajectory_sol.y[:, -1] if len(drift_trajectory_sol.y) > 0 else pre_drift_state
+
+    # Final burn
+    t_span = [input[4] * 60, final_time]
+    t_eval = np.linspace(input[4] * 60, final_time, int((max_time - input[4] * 60) * 120))
+    thrust = input[5:8] * 4000
+    final_trajectory_sol = solve_ivp(dynamics, t_span, post_drift_state, t_eval=t_eval, args=(thrust,))
+
+    if len(initial_trajectory_sol.y) == 0:
+        initial_trajectory_sol.y = np.zeros((12, 0))
+    if len(drift_trajectory_sol.y) == 0:
+        drift_trajectory_sol.y = np.zeros((12, 0))
+    if len(final_trajectory_sol.y) == 0:
+        final_trajectory_sol.y = np.zeros((12, 0))
+    full_trajectory = np.hstack((initial_trajectory_sol.y, drift_trajectory_sol.y, final_trajectory_sol.y))
+    full_time = np.hstack((initial_trajectory_sol.t, drift_trajectory_sol.t, final_trajectory_sol.t))
+
+    return full_time, full_trajectory
 
 # Integrate the dynamics for no control input
+input = np.zeros(9)
 initial_state = [obs[i] for i in range(3, 15)]
-t_span = [0, 600]
-sol = solve_ivp(dynamics, t_span, initial_state, t_eval=np.linspace(0, 600, 1200))
+initial_trajectory = get_trajectory(initial_state, input)
+initial_trajectory = (initial_trajectory[0] + obs[0], initial_trajectory[1])
+
+# input = start time, x thrust, y thrust, z thrust, duration (minutes, thrust -1 to 1)
+# start time of initial burn is 0
+input = np.array([0, 0, 0, 0.5, 2.0, 0, 0, 0, 0.5])
+bounds = ((-1, 1), (-1, 1), (-1, 1), (0, None), (0, None), (-1, 1), (-1, 1), (-1, 1), (0, None))
+constraints = ({'type': 'ineq', 'fun': lambda input: max_time - (input[4] + input[8]) * 60},
+               {'type': 'ineq', 'fun': lambda input: input[4] - input[3]})
+options = {'maxiter': 1000}
+result = minimize(cost_function, input, bounds=bounds, constraints=constraints, options=options)
+print("Optimization result:", result)
+input = result.x
+
+if not result.success or result.fun > 50:
+    raise ValueError("Optimization failed")
+
+optimal_trajectory = get_trajectory(initial_state, input)
+optimal_trajectory = (optimal_trajectory[0] + obs[0], optimal_trajectory[1])
 
 # State space model
 A = np.array([[0, 1, 0, 0, 0, 0],
@@ -112,7 +205,7 @@ try:
 
         # calculate control
         u = (-K @ x).flatten()
-        u_saturated = np.clip(u, -env.agent_max_thrust_up, env.agent_max_thrust_up)
+        u_saturated = np.clip(u, -MAX_THRUST, MAX_THRUST)
         u_hist.append(u)
         u_saturated_hist.append(u_saturated)
 
@@ -140,24 +233,26 @@ u_array = np.array(u_hist)
 u_saturated_array = np.array(u_saturated_hist)
 
 # Plot trajectory
-sol_t = np.array(sol.t) + time_hist[0]
-sol_y = np.array(sol.y)
-sol_indices = np.where(sol_t <= time_hist[-1])
-sol_t = sol_t[sol_indices]
-sol_y = sol_y[:, sol_indices].squeeze()
+initial_t = initial_trajectory[0]
+initial_pos = initial_trajectory[1]
+optimal_t = optimal_trajectory[0]
+optimal_pos = optimal_trajectory[1]
 fig, ax = plt.subplots(1, 3, figsize=(16, 8))
-ax[0].plot(sol_t, sol_y[0], color='b', label='x')
-ax[0].plot(time_hist, pos_array[:, 0], color='r', label='x rel')
+ax[0].plot(initial_t, initial_pos[0], color='b', label='Initial')
+ax[0].plot(time_hist, pos_array[:, 0], color='r', label='Actual')
+ax[0].plot(optimal_t, optimal_pos[0], color='g', label='Optimal')
 ax[0].set_title('x (s)')
 ax[0].set_ylabel('Position (m)')
 ax[0].grid()
 ax[0].legend()
-ax[1].plot(sol_t, sol_y[1], color='b')
+ax[1].plot(initial_t, initial_pos[1], color='b')
 ax[1].plot(time_hist, pos_array[:, 1], color='r')
+ax[1].plot(optimal_t, optimal_pos[1], color='g')
 ax[1].set_title('y (s)')
 ax[1].grid()
-ax[2].plot(sol_t, sol_y[2], color='b')
+ax[2].plot(initial_t, initial_pos[2], color='b')
 ax[2].plot(time_hist, pos_array[:, 2], color='r')
+ax[2].plot(optimal_t, optimal_pos[2], color='g')
 ax[2].set_title('z (s)')
 ax[2].grid()
 plt.suptitle('Trajectory of the spacecraft')
