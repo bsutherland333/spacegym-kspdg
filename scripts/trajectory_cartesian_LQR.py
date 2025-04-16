@@ -99,47 +99,61 @@ def get_trajectory(initial_time, initial_state, input):
     t_eval = np.linspace(initial_time, input[0], int(input[0] * 2))
     thrust = np.zeros(3)
     pre_manuever_trajectory_sol = solve_ivp(dynamics, t_span, initial_state, t_eval=t_eval, args=(thrust,))
-    pre_manuever_state = pre_manuever_trajectory_sol.y[:, -1] \
-        if len(pre_manuever_trajectory_sol.y) > 0 else initial_state
+    if len(pre_manuever_trajectory_sol.y) == 0:
+        pre_manuever_trajectory_sol.y = np.zeros((12, 0))
+        pre_manuever_state = initial_state
+    else:
+        pre_manuever_state = pre_manuever_trajectory_sol.y[:, -1]
+        pre_manuever_trajectory_sol.y = pre_manuever_trajectory_sol.y[:, :-1]
+        pre_manuever_trajectory_sol.t = pre_manuever_trajectory_sol.t[:-1]
 
     # Initial burn
     t_span = [input[0], input[0] + input[4]]
     t_eval = np.linspace(input[0], input[0] + input[4], int(input[4] * 2))
     thrust = input[1:4]
     initial_trajectory_sol = solve_ivp(dynamics, t_span, pre_manuever_state, t_eval=t_eval, args=(thrust,))
-    pre_drift_state = initial_trajectory_sol.y[:, -1] \
-        if len(initial_trajectory_sol.y) > 0 else pre_manuever_state
+    if len(initial_trajectory_sol.y) == 0:
+        initial_trajectory_sol.y = np.zeros((12, 0))
+        pre_drift_state = pre_manuever_state
+    else:
+        pre_drift_state = initial_trajectory_sol.y[:, -1]
+        initial_trajectory_sol.y = initial_trajectory_sol.y[:, :-1]
+        initial_trajectory_sol.t = initial_trajectory_sol.t[:-1]
 
     # Drift
     t_span = [input[0] + input[4], input[5]]
     t_eval = np.linspace(input[0] + input[4], input[5], int((input[5] - input[4] - input[0]) * 2))
     thrust = np.zeros(3)
     drift_trajectory_sol = solve_ivp(dynamics, t_span, pre_drift_state, t_eval=t_eval, args=(thrust,))
-    post_drift_state = drift_trajectory_sol.y[:, -1] if len(drift_trajectory_sol.y) > 0 else pre_drift_state
+    if len(drift_trajectory_sol.y) == 0:
+        drift_trajectory_sol.y = np.zeros((12, 0))
+        post_drift_state = pre_drift_state
+    else:
+        post_drift_state = drift_trajectory_sol.y[:, -1]
+        drift_trajectory_sol.y = drift_trajectory_sol.y[:, :-1]
+        drift_trajectory_sol.t = drift_trajectory_sol.t[:-1]
 
     # Final burn
     t_span = [input[5], input[5] + input[9]]
     t_eval = np.linspace(input[5], input[5] + input[9], int(input[9] * 2))
     thrust = input[1:4]
     final_trajectory_sol = solve_ivp(dynamics, t_span, post_drift_state, t_eval=t_eval, args=(thrust,))
-    final_state = final_trajectory_sol.y[:, -1] if len(final_trajectory_sol.y) > 0 else post_drift_state
+    if len(final_trajectory_sol.y) == 0:
+        final_trajectory_sol.y = np.zeros((12, 0))
+        final_state = post_drift_state
+    else:
+        final_state = final_trajectory_sol.y[:, -1]
+        final_trajectory_sol.y = final_trajectory_sol.y[:, :-1]
+        final_trajectory_sol.t = final_trajectory_sol.t[:-1]
 
     # Post burn drift
     t_span = [input[5] + input[9], input[5] + input[9] + 60]
     t_eval = np.linspace(input[5] + input[9], input[5] + input[9] + 60, int(60 * 2))
     thrust = np.zeros(3)
     post_burn_trajectory_sol = solve_ivp(dynamics, t_span, final_state, t_eval=t_eval, args=(thrust,))
-
-    if len(pre_manuever_trajectory_sol.y) == 0:
-        pre_manuever_trajectory_sol.y = np.zeros((12, 0))
-    if len(initial_trajectory_sol.y) == 0:
-        initial_trajectory_sol.y = np.zeros((12, 0))
-    if len(drift_trajectory_sol.y) == 0:
-        drift_trajectory_sol.y = np.zeros((12, 0))
-    if len(final_trajectory_sol.y) == 0:
-        final_trajectory_sol.y = np.zeros((12, 0))
     if len(post_burn_trajectory_sol.y) == 0:
         post_burn_trajectory_sol.y = np.zeros((12, 0))
+
     full_trajectory = np.hstack((pre_manuever_trajectory_sol.y, initial_trajectory_sol.y,
                                  drift_trajectory_sol.y, final_trajectory_sol.y, post_burn_trajectory_sol.y))
     full_time = np.hstack((pre_manuever_trajectory_sol.t, initial_trajectory_sol.t,
@@ -160,7 +174,7 @@ def get_expected_state_command(t, trajectory, input):
         thrust = np.zeros(3)
     elif t >= input[5]:
         thrust = input[6:9]
-    elif t >= input[4]:
+    elif t >= input[4] + input[0]:
         thrust = np.zeros(3)
     elif t >= input[0]:
         thrust = input[1:4]
@@ -168,15 +182,21 @@ def get_expected_state_command(t, trajectory, input):
         thrust = np.zeros(3)
 
     # Interpolate the current state in the trajectory
-    t1_idx = np.searchsorted(t_array, t)
-    t0_idx = t1_idx - 1
-    t0 = t_array[t0_idx]
-    t1 = t_array[t1_idx]
-    x0 = state_array[:, t0_idx]
-    x1 = state_array[:, t1_idx]
-    x = x0 + (x1 - x0) * (t - t0) / (t1 - t0)
+    idx = np.searchsorted(t_array, t)
+    if (t - t_array[idx - 1]) < (t_array[idx] - t):
+        idx_0 = idx - 2
+        idx_1 = idx - 1
+        idx_2 = idx
+    else:
+        idx_0 = idx - 1
+        idx_1 = idx
+        idx_2 = idx + 1
 
-    thrust = thrust.reshape(-1, 1)
+    l_0 = (t - t_array[idx_1]) * (t - t_array[idx_2]) / (t_array[idx_0] - t_array[idx_1]) / (t_array[idx_0] - t_array[idx_2])
+    l_1 = (t - t_array[idx_0]) * (t - t_array[idx_2]) / (t_array[idx_1] - t_array[idx_0]) / (t_array[idx_1] - t_array[idx_2])
+    l_2 = (t - t_array[idx_0]) * (t - t_array[idx_1]) / (t_array[idx_2] - t_array[idx_0]) / (t_array[idx_2] - t_array[idx_1])
+
+    x = l_0 * state_array[:, idx_0] + l_1 * state_array[:, idx_1] + l_2 * state_array[:, idx_2]
     x = x[:6].reshape(-1, 1)
 
     return x, thrust
@@ -211,8 +231,9 @@ optimal_input[5] += obs[0]
 # Get the initial and optimal trajectories
 null_input = np.zeros(10)
 null_input[0] = initial_time
-null_input[5] = initial_time
-null_input[-1] = optimal_input[5] + optimal_input[9]
+null_input[4] = 30
+null_input[5] = initial_time + 60
+null_input[9] = optimal_input[5] + optimal_input[9] - initial_time - 60
 initial_trajectory = get_trajectory(initial_time, initial_state, null_input)
 optimal_trajectory = get_trajectory(initial_time, initial_state, optimal_input)
 
@@ -272,6 +293,7 @@ try:
         # calculate control
         x_0, u_0 = get_expected_state_command(time, optimal_trajectory, optimal_input)
         u = (u_0 - K @ (x - x_0)).flatten()
+        u = u_0
         u_saturated = np.clip(u, -MAX_THRUST, MAX_THRUST)
         u_hist.append(u)
         u_saturated_hist.append(u_saturated)
