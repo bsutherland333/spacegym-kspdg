@@ -24,7 +24,7 @@ from scipy.optimize import minimize
 MU = C.KERBIN.MU  # m^3/s^2
 MAX_THRUST = np.abs(PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_THRUST_UP)
 MAX_FUEL_CONSUMPION = PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_FUEL_CONSUMPTION_UP
-max_time = 180.0  # seconds
+max_time = 300.0  # seconds
 env = PE1_E1_I3_Env(episode_timeout=max_time + 60, capture_dist=5.0)
 obs, info = env.reset()
 mass = float(obs[1])
@@ -180,6 +180,7 @@ def get_expected_state_command(t, trajectory, input):
         thrust = input[1:4]
     else:
         thrust = np.zeros(3)
+    thrust = thrust.reshape(-1, 1)
 
     # Interpolate the current state in the trajectory
     idx = np.searchsorted(t_array, t)
@@ -238,31 +239,31 @@ initial_trajectory = get_trajectory(initial_time, initial_state, null_input)
 optimal_trajectory = get_trajectory(initial_time, initial_state, optimal_input)
 
 # State space model
-A = np.array([[0, 1, 0, 0, 0, 0],
-              [0, 0, 0, 0, 0, 0],
-              [0, 0, 0, 1, 0, 0],
-              [0, 0, 0, 0, 0, 0],
+A = np.array([[0, 0, 0, 1, 0, 0],
+              [0, 0, 0, 0, 1, 0],
               [0, 0, 0, 0, 0, 1],
+              [0, 0, 0, 0, 0, 0],
+              [0, 0, 0, 0, 0, 0],
               [0, 0, 0, 0, 0, 0]])
 B = np.array([[0, 0, 0],
+              [0, 0, 0],
+              [0, 0, 0],
               [1 / mass, 0, 0],
-              [0, 0, 0],
               [0, 1 / mass, 0],
-              [0, 0, 0],
               [0, 0, 1 / mass]])
 C = np.eye(6)
 D = np.array([[0, 0, 0]])
 
 # LQR parameters
-pos_weight = 10
-vel_weight = 0
+pos_weight = 1
+vel_weight = 1
 u_weight = 1 / MAX_THRUST
 
 Q = np.array([[pos_weight, 0, 0, 0, 0, 0],
-              [0, vel_weight, 0, 0, 0, 0],
+              [0, pos_weight, 0, 0, 0, 0],
               [0, 0, pos_weight, 0, 0, 0],
               [0, 0, 0, vel_weight, 0, 0],
-              [0, 0, 0, 0, pos_weight, 0],
+              [0, 0, 0, 0, vel_weight, 0],
               [0, 0, 0, 0, 0, vel_weight]])
 R = np.eye(3) * u_weight
 
@@ -293,13 +294,12 @@ try:
         # calculate control
         x_0, u_0 = get_expected_state_command(time, optimal_trajectory, optimal_input)
         u = (u_0 - K @ (x - x_0)).flatten()
-        u = u_0
         u_saturated = np.clip(u, -MAX_THRUST, MAX_THRUST)
         u_hist.append(u)
         u_saturated_hist.append(u_saturated)
 
         # apply control
-        env.logger.info(f"rel_pos: {rel_pos}, rel_vel: {rel_vel}, u_saturated: {u_saturated}")
+        env.logger.info(f"state error: {(x - x_0).flatten()}, u_s: {u_saturated.flatten()}, u_0: {u_0.flatten()}")
         act = {
             "burn_vec": [u_saturated.item(0), u_saturated.item(1), u_saturated.item(2), 0.1],
             "vec_type": 1,
