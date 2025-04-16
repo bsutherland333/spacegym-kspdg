@@ -22,7 +22,7 @@ from scipy.optimize import minimize
 
 # instantiate and reset the environment to populate game
 MU = C.KERBIN.MU  # m^3/s^2
-MAX_THRUST = PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_THRUST_UP
+MAX_THRUST = np.abs(PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_THRUST_UP)
 MAX_FUEL_CONSUMPION = PursuitEvadeGroup1Env.PARAMS.PURSUER.RCS.VACUUM_MAX_FUEL_CONSUMPTION_UP
 max_time = 300.0  # seconds
 env = PE1_E1_I3_Env(episode_timeout=max_time, capture_dist=5.0)
@@ -54,14 +54,13 @@ def dynamics(t, x, thrust):
     return np.array([dx_p_dt, dy_p_dt, dz_p_dt, dvx_p_dt, dvy_p_dt, dvz_p_dt,
                      dx_e_dt, dy_e_dt, dz_e_dt, dvx_e_dt, dvy_e_dt, dvz_e_dt])
 
-def cost_function(input):
+def cost_function(input, initial_state):
     desired_first_step = 2.5
-    initial_state = [obs[i] for i in range(3, 15)]
     final_time = (input[4] + input[8]) * 60
 
     # Initial burn
     t_span = [0, input[3] * 60]
-    thrust = input[0:3] * 4000
+    thrust = input[0:3] * MAX_THRUST
     first_step = np.min([desired_first_step, input[3] * 60 - 0.1])
     first_step = first_step if first_step > 0 else None
     pre_drift_state = solve_ivp(dynamics, t_span, initial_state, first_step=first_step, args=(thrust,)).y[:, -1]
@@ -96,7 +95,7 @@ def get_trajectory(initial_state, input):
     # Initial burn
     t_span = [0, input[3] * 60]
     t_eval = np.linspace(0, input[3] * 60, int(input[3] * 120))
-    thrust = input[0:3] * 4000
+    thrust = input[0:3] * MAX_THRUST
     initial_trajectory_sol = solve_ivp(dynamics, t_span, initial_state, t_eval=t_eval, args=(thrust,))
     pre_drift_state = initial_trajectory_sol.y[:, -1] if len(initial_trajectory_sol.y) > 0 else initial_state
 
@@ -110,7 +109,7 @@ def get_trajectory(initial_state, input):
     # Final burn
     t_span = [input[4] * 60, final_time]
     t_eval = np.linspace(input[4] * 60, final_time, int((max_time - input[4] * 60) * 120))
-    thrust = input[5:8] * 4000
+    thrust = input[0:3] * MAX_THRUST
     final_trajectory_sol = solve_ivp(dynamics, t_span, post_drift_state, t_eval=t_eval, args=(thrust,))
 
     if len(initial_trajectory_sol.y) == 0:
@@ -124,27 +123,74 @@ def get_trajectory(initial_state, input):
 
     return full_time, full_trajectory
 
-# Integrate the dynamics for no control input
-input = np.zeros(9)
-initial_state = [obs[i] for i in range(3, 15)]
-initial_trajectory = get_trajectory(initial_state, input)
-initial_trajectory = (initial_trajectory[0] + obs[0], initial_trajectory[1])
+def get_expected_state_command(t, trajectory, input):
+    # Input is assumed to be in seconds and newtons, with initial start time as the first element
+    # Trajectory is formatted as extended state from optimization
+    # x is the state vector and u is the thrust vector as used by the pursuer control law
 
+    t_array = trajectory[0]
+    state_array = trajectory[1]
+
+    # Get the current command based on the time
+    if t >= input[5] + input[9]:
+        thrust = np.zeros(3)
+    elif t >= input[5]:
+        thrust = input[6:9]
+    elif t >= input[4]:
+        thrust = np.zeros(3)
+    elif t >= input[0]:
+        thrust = input[1:4]
+    else:
+        thrust = np.zeros(3)
+
+    # Interpolate the current state in the trajectory
+    t1_idx = np.searchsorted(t_array, t)
+    t0_idx = t1_idx - 1
+    t0 = t_array[t0_idx]
+    t1 = t_array[t1_idx]
+    x0 = state_array[:, t0_idx]
+    x1 = state_array[:, t1_idx]
+    x = x0 + (x1 - x0) * (t - t0) / (t1 - t0)
+
+    thrust = thrust.reshape(-1, 1)
+    x = x[:6].reshape(-1, 1)
+
+    return x, thrust
+
+# Perform optimization
 # input = start time, x thrust, y thrust, z thrust, duration (minutes, thrust -1 to 1)
 # start time of initial burn is 0
-input = np.array([0, 0, 0, 0.5, 2.0, 0, 0, 0, 0.5])
+optimal_input = np.array([0, 0, 0, 0.5, 2.0, 0, 0, 0, 0.5])
+initial_state = obs[3:15]
 bounds = ((-1, 1), (-1, 1), (-1, 1), (0, None), (0, None), (-1, 1), (-1, 1), (-1, 1), (0, None))
 constraints = ({'type': 'ineq', 'fun': lambda input: max_time - (input[4] + input[8]) * 60},
                {'type': 'ineq', 'fun': lambda input: input[4] - input[3]})
 options = {'maxiter': 1000}
-result = minimize(cost_function, input, bounds=bounds, constraints=constraints, options=options)
+result = minimize(cost_function, optimal_input, bounds=bounds, constraints=constraints, options=options, args=(initial_state))
 print("Optimization result:", result)
-input = result.x
+optimal_input = result.x
 
 if not result.success or result.fun > 50:
     raise ValueError("Optimization failed")
 
-optimal_trajectory = get_trajectory(initial_state, input)
+# Get the initial and optimal trajectories
+obs = env.get_observation()
+initial_state = obs[3:15]
+null_input = np.zeros(9)
+null_input[-1] = optimal_input[4] + optimal_input[8]
+initial_trajectory = get_trajectory(initial_state, null_input)
+optimal_trajectory = get_trajectory(initial_state, optimal_input)
+
+# Convert input to seconds and newtons
+optimal_input[0:3] = optimal_input[0:3] * MAX_THRUST
+optimal_input[3:5] = optimal_input[3:5] * 60
+optimal_input[5:8] = optimal_input[5:8] * MAX_THRUST
+optimal_input[8] = optimal_input[8] * 60
+
+# Shift the trajectories to start with the simulation time
+optimal_input = np.hstack((obs[0], optimal_input))
+optimal_input[4] += obs[0]
+initial_trajectory = (initial_trajectory[0] + obs[0], initial_trajectory[1])
 optimal_trajectory = (optimal_trajectory[0] + obs[0], optimal_trajectory[1])
 
 # State space model
@@ -164,9 +210,9 @@ C = np.eye(6)
 D = np.array([[0, 0, 0]])
 
 # LQR parameters
-pos_weight = 2.5
-vel_weight = 50
-u_weight = 0.5
+pos_weight = 0
+vel_weight = 10
+u_weight = 1 / MAX_THRUST
 
 Q = np.array([[pos_weight, 0, 0, 0, 0, 0],
               [0, vel_weight, 0, 0, 0, 0],
@@ -181,7 +227,6 @@ K, S, E = ctrl.lqr(A, B, Q, R)
 
 is_done = False
 time_hist = []
-propellant_mass_hist = []
 pos_hist = []
 rel_pos_hist = []
 rel_vel_hist = []
@@ -191,20 +236,19 @@ try:
     while not is_done:
         # get observations
         time = obs[0]
-        propellant_mass = obs[2]
         rel_pos = np.array(obs[3:6]) - np.array(obs[9:12])
         rel_vel = np.array(obs[6:9]) - np.array(obs[12:15])
-        x = np.hstack((rel_pos.reshape(-1, 1), rel_vel.reshape(-1, 1))).reshape(-1, 1)
+        x = np.array(obs[3:9]).reshape(-1, 1)
 
         # store observations
         time_hist.append(time)
-        propellant_mass_hist.append(propellant_mass)
         pos_hist.append(obs[3:6])
         rel_pos_hist.append(rel_pos)
         rel_vel_hist.append(rel_vel)
 
         # calculate control
-        u = (-K @ x).flatten()
+        x_0, u_0 = get_expected_state_command(time, optimal_trajectory, optimal_input)
+        u = (u_0 - K @ (x - x_0)).flatten()
         u_saturated = np.clip(u, -MAX_THRUST, MAX_THRUST)
         u_hist.append(u)
         u_saturated_hist.append(u_saturated)
@@ -232,27 +276,32 @@ rel_vel_array = np.array(rel_vel_hist)
 u_array = np.array(u_hist)
 u_saturated_array = np.array(u_saturated_hist)
 
+# Calculate error of actual and initial trajectory from optimal trajectory
+actual_error = []
+initial_error = []
+for t, actual_pos in zip(time_hist, pos_array):
+    actual_pos = np.array(actual_pos).reshape(-1, 1)
+    optimal_pos = get_expected_state_command(t, optimal_trajectory, optimal_input)[0][:3]
+    initial_pos = get_expected_state_command(t, initial_trajectory, np.zeros(10))[0][:3]
+    actual_error.append(actual_pos - optimal_pos)
+    initial_error.append(initial_pos - optimal_pos)
+actual_error = np.array(actual_error).squeeze()
+initial_error = np.array(initial_error).squeeze()
+
 # Plot trajectory
-initial_t = initial_trajectory[0]
-initial_pos = initial_trajectory[1]
-optimal_t = optimal_trajectory[0]
-optimal_pos = optimal_trajectory[1]
 fig, ax = plt.subplots(1, 3, figsize=(16, 8))
-ax[0].plot(initial_t, initial_pos[0], color='b', label='Initial')
-ax[0].plot(time_hist, pos_array[:, 0], color='r', label='Actual')
-ax[0].plot(optimal_t, optimal_pos[0], color='g', label='Optimal')
+ax[0].plot(time_hist, initial_error[:, 0], color='b', label='Initial Error')
+ax[0].plot(time_hist, actual_error[:, 0], color='r', label='Actual Error')
 ax[0].set_title('x (s)')
 ax[0].set_ylabel('Position (m)')
 ax[0].grid()
 ax[0].legend()
-ax[1].plot(initial_t, initial_pos[1], color='b')
-ax[1].plot(time_hist, pos_array[:, 1], color='r')
-ax[1].plot(optimal_t, optimal_pos[1], color='g')
+ax[1].plot(time_hist, initial_error[:, 1], color='b')
+ax[1].plot(time_hist, actual_error[:, 1], color='r')
 ax[1].set_title('y (s)')
 ax[1].grid()
-ax[2].plot(initial_t, initial_pos[2], color='b')
-ax[2].plot(time_hist, pos_array[:, 2], color='r')
-ax[2].plot(optimal_t, optimal_pos[2], color='g')
+ax[2].plot(time_hist, initial_error[:, 2], color='b')
+ax[2].plot(time_hist, actual_error[:, 2], color='r')
 ax[2].set_title('z (s)')
 ax[2].grid()
 plt.suptitle('Trajectory of the spacecraft')
