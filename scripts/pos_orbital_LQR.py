@@ -88,6 +88,7 @@ def calculate_K(obs):
             mu*(x_e_curr**2 + y_e_curr**2 - 2*z_e_curr**2) / (x_e_curr**2 + y_e_curr**2 + z_e_curr**2)**(5/2)
 
         # State space model
+        # TODO: This matrix is missing terms... No wonder it didn't perform great.
         A = np.array([[0, 1, 0, 0, 0, 0],
                       [partial_f_x, 0, 0, 0, 0, 0],
                       [0, 0, 0, 1, 0, 0],
